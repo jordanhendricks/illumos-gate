@@ -60,7 +60,7 @@ ENTRY(inl)
 	ret
 SET_SIZE(inl)
 
-/* uint64_t wrmsr(uint32_t msr) */
+/* uint64_t rdmsr(uint32_t msr) */
 ENTRY(rdmsr)
 	movl    %edi, %ecx
 	rdmsr
@@ -93,3 +93,11 @@ ENTRY(cpuid)
 	popq    %rbx
 	ret
 SET_SIZE(cpuid)
+
+/* uint64_t rdtsc(void) */
+ENTRY(rdtsc)
+	rdtsc
+	shlq    $32, %rdx
+	orq     %rdx, %rax
+	ret
+SET_SIZE(rdtsc)
