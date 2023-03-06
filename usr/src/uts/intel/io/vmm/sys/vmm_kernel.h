@@ -69,6 +69,14 @@ struct vm_object;
 struct vm_guest_paging;
 struct vmm_data_req;
 
+/* Return values for architecture-specifc calculation of the TSC multiplier */
+typedef enum {
+	VFR_VALID,			/* valid multiplier, scaling needed */
+	VFR_SCALING_NOT_NEEDED,		/* scaling not required */
+	VFR_SCALING_NOT_SUPPORTED,	/* scaling not supported by platform */
+	VFR_OUT_OF_RANGE,		/* freq ratio too large to support */
+} vmi_freqratio_res_t;
+
 typedef int	(*vmm_init_func_t)(void);
 typedef int	(*vmm_cleanup_func_t)(void);
 typedef void	(*vmm_resume_func_t)(void);
@@ -94,6 +102,8 @@ typedef int	(*vmi_get_msr_t)(void *vmi, int vcpu, uint32_t msr,
     uint64_t *valp);
 typedef int	(*vmi_set_msr_t)(void *vmi, int vcpu, uint32_t msr,
     uint64_t val);
+typedef vmi_freqratio_res_t	(*vmi_freqratio)(uint64_t guest_hz,
+    uint64_t host_hz, uint64_t *mult, uint8_t *frac);
 
 struct vmm_ops {
 	vmm_init_func_t		init;		/* module wide initialization */
@@ -117,6 +127,8 @@ struct vmm_ops {
 
 	vmi_get_msr_t		vmgetmsr;
 	vmi_set_msr_t		vmsetmsr;
+
+	vmi_freqratio		vmfreqratio;
 };
 
 extern struct vmm_ops vmm_ops_intel;
@@ -246,6 +258,7 @@ void vcpu_unblock_run(struct vm *, int);
 uint64_t vcpu_tsc_offset(struct vm *vm, int vcpuid, bool phys_adj);
 hrtime_t vm_normalize_hrtime(struct vm *, hrtime_t);
 hrtime_t vm_denormalize_hrtime(struct vm *, hrtime_t);
+uint64_t vm_get_freq_multiplier(struct vm *);
 
 static __inline bool
 vcpu_is_running(struct vm *vm, int vcpu, int *hostcpu)
@@ -505,5 +518,8 @@ typedef struct vmm_data_version_entry {
 
 int vmm_data_read(struct vm *, int, const vmm_data_req_t *);
 int vmm_data_write(struct vm *, int, const vmm_data_req_t *);
+
+uint64_t vmm_calc_freq_multiplier(uint64_t guest_hz, uint64_t host_hz,
+    uint8_t frac);
 
 #endif /* _VMM_KERNEL_H_ */

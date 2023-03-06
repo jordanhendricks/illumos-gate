@@ -206,6 +206,7 @@ extern "C" {
 
 #define	MSR_AMD_VM_CR		0xc0010114 /* SVM global control */
 #define	MSR_AMD_VM_HSAVE_PA	0xc0010117 /* SVM host save area address */
+#define	MSR_AMD_TSC_RATIO	0xc0000104 /* SVM TSC Ratio */
 
 #define	AMD_VM_CR_DPD		(1 << 0)
 #define	AMD_VM_CR_R_INIT	(1 << 1)

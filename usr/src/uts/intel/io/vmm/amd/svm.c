@@ -61,6 +61,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/specialreg.h>
 #include <machine/vmm.h>
 #include <machine/vmm_dev.h>
+//#include <sys/controlregs.h>
 #include <sys/vmm_instruction_emul.h>
 #include <sys/vmm_vm.h>
 #include <sys/vmm_kernel.h>
@@ -107,6 +108,17 @@ SYSCTL_NODE(_hw_vmm, OID_AUTO, svm, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
 				VMCB_CACHE_SEG		|	\
 				VMCB_CACHE_NP)
 
+/*
+ * TSC Scaling related values
+ */
+#define	AMD_TSCM_INT_SIZE	8
+#define	AMD_TSCM_FRAC_SIZE	32
+#define	AMD_TSC_MIN_FREQ	0
+#define	AMD_TSC_MAX_FREQ_RATIO	15
+
+// TODO: figure out where I should put this definition
+#define	MSR_AMD_TSC_RATIO	0xc0000104	/* SVM TSC Ratio MSR */
+
 static uint32_t vmcb_clean = VMCB_CACHE_DEFAULT;
 SYSCTL_INT(_hw_vmm_svm, OID_AUTO, vmcb_clean, CTLFLAG_RDTUN, &vmcb_clean,
     0, NULL);
@@ -123,6 +135,12 @@ static VMM_STAT_AMD(VMEXIT_VINTR, "VM exits due to interrupt window");
 static int svm_setreg(void *arg, int vcpu, int ident, uint64_t val);
 static int svm_getreg(void *arg, int vcpu, int ident, uint64_t *val);
 static void flush_asid(struct svm_softc *sc, int vcpuid);
+
+static __inline bool
+tsc_rate(void)
+{
+	return ((svm_feature & AMD_CPUID_SVM_TSC_RATE) != 0);
+}
 
 static __inline bool
 flush_by_asid(void)
@@ -1863,6 +1881,11 @@ svm_apply_tsc_adjust(struct svm_softc *svm_sc, int vcpuid)
 		ctrl->tsc_offset = offset;
 		svm_set_dirty(svm_sc, vcpuid, VMCB_CACHE_I);
 	}
+
+	uint64_t m = vm_get_freq_multiplier(svm_sc->vm);
+	if (m != 0) {
+		wrmsr(MSR_AMD_TSC_RATIO, m);
+	}
 }
 
 
@@ -2530,6 +2553,46 @@ svm_restorectx(void *arg, int vcpu)
 	}
 }
 
+static vmi_freqratio_res_t
+svm_freq_ratio(uint64_t guest_hz, uint64_t host_hz, uint64_t *mult,
+    uint8_t *frac)
+{
+	*frac = AMD_TSCM_FRAC_SIZE;
+
+	// TODO: we might want to enforce a minimum value that isn't 0 here
+	if (guest_hz == AMD_TSC_MIN_FREQ) {
+		return (VFR_OUT_OF_RANGE);
+	}
+
+	/*
+	 * Check whether scaling is needed before potentially erroring
+	 * out because scaling isn't supported.
+	 */
+	if (guest_hz == host_hz) {
+		*mult = 0;
+		return (VFR_SCALING_NOT_NEEDED);
+	}
+
+	/*
+	 * Confirm that scaling is available.
+	 */
+	if (!tsc_rate()) {
+		*mult = 0;
+		return (VFR_SCALING_NOT_SUPPORTED);
+	}
+
+	/* Calculate the multiplier and validate. */
+	uint64_t m = vmm_calc_freq_multiplier(guest_hz, host_hz,
+	    AMD_TSCM_FRAC_SIZE);
+	*mult = m;
+
+	if ((m >> AMD_TSCM_FRAC_SIZE) > AMD_TSC_MAX_FREQ_RATIO) {
+		return (VFR_OUT_OF_RANGE);
+	}
+
+	return (VFR_VALID);
+}
+
 struct vmm_ops vmm_ops_amd = {
 	.init		= svm_init,
 	.cleanup	= svm_cleanup,
@@ -2552,4 +2615,6 @@ struct vmm_ops vmm_ops_amd = {
 
 	.vmgetmsr	= svm_get_msr,
 	.vmsetmsr	= svm_set_msr,
+
+	.vmfreqratio	= svm_freq_ratio,
 };

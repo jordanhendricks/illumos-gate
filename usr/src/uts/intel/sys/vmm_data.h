@@ -35,8 +35,10 @@
 #define	VDC_PM_TIMER	11	/* ACPI Power Management Timer */
 #define	VDC_RTC		12	/* IBM PC Real Time Clock */
 
+#define	VDC_VMM_TIMING	13	/* Timing-related VMM data */
+
 /* Indicates top of VMM Data Class range, updated as classes are added */
-#define	VDC_MAX		(VDC_RTC + 1)
+#define	VDC_MAX		(VDC_VMM_TIMING + 1)
 
 
 /* VMM Data Identifiers */
@@ -115,9 +117,17 @@ struct vdi_lapic_v1 {
 #define	VAI_TSC_BOOT_OFFSET	1
 /* Time that guest (nominally) booted, as hrtime */
 #define	VAI_BOOT_HRTIME		2
-/* Guest TSC frequency measured by hrtime (not effected by wall clock adj.) */
+/* Guest TSC frequency (not effected by wall clock adj.) */
 #define	VAI_TSC_FREQ		3
 
+/*
+ * VDC_VMM_TIMING
+ */
+
+struct vdi_timing_info_v1 {
+	uint64_t	vt_guest_freq;
+	uint64_t	vt_guest_tsc;
+};
 
 /* VDC_IOAPIC: */
 

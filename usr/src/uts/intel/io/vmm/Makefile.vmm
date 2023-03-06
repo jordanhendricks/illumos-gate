@@ -79,4 +79,5 @@ VMM_OBJS = \
 	vmm_sol_rvi.o \
 	vmm_support.o \
 	vmm_vm.o \
-	vmm_zsd.o
+	vmm_zsd.o \
+	vmm_timing_math.o
