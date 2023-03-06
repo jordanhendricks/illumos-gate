@@ -28,5 +28,6 @@ uint32_t inl(uint16_t);
 uint64_t rdmsr(uint32_t);
 void wrmsr(uint32_t, uint64_t);
 void cpuid(uint32_t, uint32_t, uint32_t *);
+uint64_t rdtsc(void);
 
 #endif /* _PAYLOAD_UTILS_H_ */

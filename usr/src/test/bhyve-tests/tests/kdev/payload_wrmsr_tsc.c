@@ -13,18 +13,23 @@
  * Copyright 2023 Oxide Computer Company
  */
 
-#ifndef _COMMON_H_
-#define	_COMMON_H_
+#include "payload_common.h"
+#include "payload_utils.h"
+#include "test_defs.h"
 
-void name_test_vm(const char *, char *);
-struct vmctx *create_test_vm(const char *);
-int alloc_memseg(struct vmctx *, int, size_t, const char *);
-int open_drv_test(void);
-bool check_instance_usable(const char *);
-bool check_instance_exists(const char *);
-int destroy_instance(const char *);
-bool cpu_vendor_amd(void);
+#define UINT32_MAX 0xffffffff
+#define	MSR_TSC	0x10
 
-#define	PROT_ALL	(PROT_READ | PROT_WRITE | PROT_EXEC)
+void
+start(void)
+{
+	/* write a value to the TSC */
+	wrmsr(0x10, TSC_TARGET_WRVAL);
 
-#endif /* _COMMON_H_ */
+	/* loop for as long as the host wants */
+	for (;;) {
+		uint64_t tsc = rdtsc();
+		outl(IOP_TEST_VALUE, UINT32_MAX & tsc);
+		outl(IOP_TEST_VALUE, UINT32_MAX & (tsc >> 32));
+	}
+}

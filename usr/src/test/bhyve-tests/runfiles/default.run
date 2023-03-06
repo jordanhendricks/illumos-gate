@@ -46,7 +46,8 @@ tests = [
 	'vlapic_freq_periodic',
 	'vlapic_mmio_access',
 	'vlapic_msr_access',
-	'vpmtmr_freq'
+	'vpmtmr_freq',
+	'wrmsr_tsc',
 	]
 
 [/opt/bhyve-tests/tests/inst_emul]

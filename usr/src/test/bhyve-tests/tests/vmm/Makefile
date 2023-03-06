@@ -30,7 +30,8 @@ PROG =	mem_partial \
 	datarw_constraints \
 	datarw_vcpu \
 	pause_resume \
-	import_vlapic
+	import_vlapic \
+	timing_data
 
 COMMON_OBJS =	common.o
 CLEAN_OBJS =	$(PROG:%=%.o)

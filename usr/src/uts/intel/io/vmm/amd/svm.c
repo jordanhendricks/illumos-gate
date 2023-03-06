@@ -37,7 +37,7 @@
  * http://www.illumos.org/license/CDDL.
  *
  * Copyright 2018 Joyent, Inc.
- * Copyright 2022 Oxide Computer Company
+ * Copyright 2023 Oxide Computer Company
  */
 
 #include <sys/cdefs.h>
@@ -107,6 +107,26 @@ SYSCTL_NODE(_hw_vmm, OID_AUTO, svm, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
 				VMCB_CACHE_SEG		|	\
 				VMCB_CACHE_NP)
 
+/*
+ * TSC Scaling related values
+ */
+#define	AMD_TSCM_INT_SIZE	8
+#define	AMD_TSCM_FRAC_SIZE	32
+#define AMD_TSCM_RESET_VAL	(1ULL << AMD_TSCM_FRAC_SIZE)
+
+/*
+ * Guardrails for supported guest frequencies.
+ *
+ * A minimum of 0.5 GHz, which should be sufficient for all recent AMD CPUs, and
+ * a maximum ratio of (15 * host frequency), which is sufficient to prevent
+ * overflowing frequency calcuations and give plenty of bandwidth for future CPU
+ * frequency increases.
+ */
+#define	AMD_TSC_MIN_FREQ	500000000
+#define	AMD_TSC_MAX_FREQ_RATIO	15
+
+static bool svm_has_tsc_freq_ctl;
+
 static uint32_t vmcb_clean = VMCB_CACHE_DEFAULT;
 SYSCTL_INT(_hw_vmm_svm, OID_AUTO, vmcb_clean, CTLFLAG_RDTUN, &vmcb_clean,
     0, NULL);
@@ -136,6 +156,12 @@ decode_assist(void)
 	return ((svm_feature & AMD_CPUID_SVM_DECODE_ASSIST) != 0);
 }
 
+static bool
+svm_tsc_freq_ctl(void)
+{
+	return ((svm_feature & AMD_CPUID_SVM_TSC_RATE) != 0);
+}
+
 static int
 svm_cleanup(void)
 {
@@ -148,6 +174,7 @@ svm_init(void)
 {
 	vmcb_clean &= VMCB_CACHE_DEFAULT;
 
+	svm_has_tsc_freq_ctl = svm_tsc_freq_ctl();
 	svm_msr_init();
 
 	return (0);
@@ -1866,6 +1893,28 @@ svm_dr_leave_guest(struct svm_regctx *gctx)
 }
 
 static void
+svm_apply_freq_multiplier(uint64_t val)
+{
+	wrmsr(MSR_AMD_TSC_RATIO, val);
+}
+
+/*
+ * Reset the SVM Frequency Ratio MSR.
+ *
+ * The reset value is 1.0 (section 15.30.5 of AMD Architecture Programmer's
+ * Manual Volume 2), indicating the host and guest have the same TSC frequency.
+ */
+static void
+svm_reset_freq_multiplier()
+{
+	svm_apply_freq_multiplier(AMD_TSCM_RESET_VAL);
+}
+
+/*
+ * Apply the TSC offset for a vCPU, including physical CPU and per-vCPU offsets,
+ * setting up TSC scaling as needed.
+ */
+static void
 svm_apply_tsc_adjust(struct svm_softc *svm_sc, int vcpuid)
 {
 	const uint64_t offset = vcpu_tsc_offset(svm_sc->vm, vcpuid, true);
@@ -1875,8 +1924,20 @@ svm_apply_tsc_adjust(struct svm_softc *svm_sc, int vcpuid)
 		ctrl->tsc_offset = offset;
 		svm_set_dirty(svm_sc, vcpuid, VMCB_CACHE_I);
 	}
-}
 
+	/*
+	 * Unconditionally set the frequency multiplier for this VM (which
+	 * is 0 for a guest without scaling). We could make this logic a bit
+	 * more intelligent, like unsetting the multiplier when we come off CPU.
+	 */
+	uint64_t mult = vm_get_freq_multiplier(svm_sc->vm);
+	if (mult != 0) {
+		svm_apply_freq_multiplier(mult);
+	} else {
+		/* no scaling required */
+		svm_reset_freq_multiplier();
+	}
+}
 
 /*
  * Start vcpu with specified RIP.
@@ -2568,6 +2629,47 @@ svm_restorectx(void *arg, int vcpu)
 	}
 }
 
+static freqratio_res_t
+svm_freq_ratio(uint64_t guest_hz, uint64_t host_hz, uint64_t *mult)
+{
+	/*
+	 * Check whether scaling is needed at all before potentially erroring
+	 * out for other reasons.
+	 */
+	if (guest_hz == host_hz) {
+		*mult = 0;
+		return (FR_SCALING_NOT_NEEDED);
+	}
+
+	/*
+	 * Confirm that scaling is available.
+	 */
+	if (!svm_has_tsc_freq_ctl) {
+		*mult = 0;
+		return (FR_SCALING_NOT_SUPPORTED);
+	}
+
+	/*
+	 * Verify the guest_hz is within the supported range.
+	 */
+	if ((guest_hz < AMD_TSC_MIN_FREQ) ||
+	    (guest_hz >= (host_hz * AMD_TSC_MAX_FREQ_RATIO))) {
+		return (FR_OUT_OF_RANGE);
+	}
+
+	// TODO: remove this?
+	/* Calculate the multiplier and validate. */
+	uint64_t m = vmm_calc_freq_multiplier(guest_hz, host_hz,
+	    AMD_TSCM_FRAC_SIZE);
+	*mult = m;
+
+	if ((m >> AMD_TSCM_FRAC_SIZE) > AMD_TSC_MAX_FREQ_RATIO) {
+		return (FR_OUT_OF_RANGE);
+	}
+
+	return (FR_VALID);
+}
+
 struct vmm_ops vmm_ops_amd = {
 	.init		= svm_init,
 	.cleanup	= svm_cleanup,
@@ -2591,4 +2693,8 @@ struct vmm_ops vmm_ops_amd = {
 
 	.vmgetmsr	= svm_get_msr,
 	.vmsetmsr	= svm_set_msr,
+
+	.vmfreqratio	= svm_freq_ratio,
+	.fr_intsize	= AMD_TSCM_INT_SIZE,
+	.fr_fracsize	= AMD_TSCM_FRAC_SIZE,
 };
