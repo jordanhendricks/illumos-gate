@@ -219,10 +219,20 @@ struct vm {
 	/* TSC and TSC scaling related values */
 	uint64_t	tsc_offset;		/* (i) VM-wide TSC offset */
 	uint64_t	guest_freq;		/* (i) guest TSC Frequency */
-	uint64_t	host_freq;		/* (i) host TSC Frequency */
 	uint64_t	freq_multiplier;	/* (i) guest/host TSC Ratio */
 	uint64_t	base_guest_tsc;		/* (i) initial guest TSC */
 	uint64_t	base_host_tsc;		/* (i) host TSC at boot */
+
+	/*
+	// temporary
+	hrtime_t	delta;
+	hrtime_t	uptime;
+	hrtime_t	dst_hrtime;
+	timespec_t	dst_hrestime;
+	uint64_t	host_ticks;
+	uint64_t	guest_ticks;
+	uint64_t	freq_msr_val;
+	*/
 
 	struct ioport_config ioports;		/* (o) ioport handling */
 
@@ -259,7 +269,9 @@ static struct vmm_ops vmm_ops_null = {
 	.vmrestorectx	= (vmi_restorectx)nullop_panic,
 	.vmgetmsr	= (vmi_get_msr_t)nullop_panic,
 	.vmsetmsr	= (vmi_set_msr_t)nullop_panic,
-	.vmfreqratio	= (vmi_freqratio)nullop_panic,
+	.vmfreqratio	= (vmi_freqratio_t)nullop_panic,
+	.fr_fracsize	= 0,
+	.fr_intsize	= 0,
 };
 
 static struct vmm_ops *ops = &vmm_ops_null;
@@ -316,7 +328,6 @@ static const struct ctxop_template vmm_ctxop_tpl = {
 	.ct_restore	= vmm_restorectx,
 };
 
-uint64_t vmm_scale_tsc(uint64_t tsc, uint64_t multiplier, uint8_t frac_size);
 
 #ifdef KTR
 static const char *
@@ -555,8 +566,7 @@ vm_init(struct vm *vm, bool create)
 	scalehrtime(&vm->boot_hrtime);
 
 	/* Guest frequency is the same as the host at boot time */
-	vm->host_freq = unscalehrtime(NANOSEC);
-	vm->guest_freq = vm->host_freq;
+	vm->guest_freq = vmm_get_host_freq();
 	vm->freq_multiplier = 0;
 	vm->base_host_tsc = boot_tsc;
 	vm->base_guest_tsc = 0;
@@ -4095,7 +4105,7 @@ static const vmm_data_version_entry_t msr_v1 = {
 VMM_DATA_VERSION(msr_v1);
 
 static const uint32_t vmm_arch_v1_fields[] = {
-	// TODO: remove these?
+	// TODO: remove tese when 15143 lands
 	VAI_TSC_BOOT_OFFSET,
 	VAI_BOOT_HRTIME,
 	VAI_TSC_FREQ,
@@ -4212,16 +4222,19 @@ VMM_DATA_VERSION(vmm_arch_v1);
 
 static int64_t
 calc_tsc_offset(uint64_t base_host_tsc, uint64_t base_guest_tsc, bool scale,
-    uint64_t mult, uint8_t frac)
+    uint64_t mult, uint32_t frac)
 {
+	int64_t offset;
 	uint64_t host_tsc_scaled = base_host_tsc;
+
 	if (scale) {
 		VERIFY3U(mult, >, 0);
 		VERIFY3U(frac, >, 0);
 		host_tsc_scaled = vmm_scale_tsc(base_host_tsc, mult, frac);
+	} else {
+		VERIFY3U(mult, ==, 0);
 	}
 
-	int64_t offset;
 	if (host_tsc_scaled >= base_guest_tsc) {
 		offset = - (host_tsc_scaled - base_guest_tsc);
 	} else {
@@ -4233,9 +4246,10 @@ calc_tsc_offset(uint64_t base_host_tsc, uint64_t base_guest_tsc, bool scale,
 
 static uint64_t
 calc_guest_tsc(uint64_t host_tsc, bool scale, uint64_t mult, uint64_t offset,
-    uint8_t frac)
+    uint32_t frac)
 {
 	uint64_t host_tsc_scaled = host_tsc;
+
 	if (scale) {
 		VERIFY3U(mult, >, 0);
 		VERIFY3U(frac, >, 0);
@@ -4245,12 +4259,29 @@ calc_guest_tsc(uint64_t host_tsc, bool scale, uint64_t mult, uint64_t offset,
 	return (host_tsc_scaled + offset);
 }
 
+/*
+ * TODO
+ */
+static int
+vmm_timing_snapshot(uint64_t *tsc, uint64_t *hrtime, uint64_t *hrestime)
+{
+	// TODO: what to do if the hrtime/hrestime aren't close enough?
+
+	timespec_t hres;
+	gethrestime(&hres);
+
+	*tsc = rdtsc_offset();
+	*hrtime = gethrtime();
+	*hrestime = ts2hrt(&hres);
+
+	return (0);
+}
+
 static int
 vmm_data_read_vmm_timing(void *arg, const vmm_data_req_t *req)
 {
 	VERIFY3U(req->vdr_class, ==, VDC_VMM_TIMING);
 	VERIFY3U(req->vdr_version, ==, 1);
-	struct vm *vm = arg;
 
 	const uint32_t size = sizeof (struct vdi_timing_info_v1);
 	if (req->vdr_len < size) {
@@ -4258,26 +4289,38 @@ vmm_data_read_vmm_timing(void *arg, const vmm_data_req_t *req)
 		return (ENOSPC);
 	}
 
+	struct vm *vm = arg;
 	struct vdi_timing_info_v1 *out = req->vdr_data;
 
-	/* Calculate the current guest TSC, scaling if needed */
-	// TODO: rdtsc() here?
-	uint64_t tsc = rdtsc_offset();
+	uint64_t tsc, hrtime, hrestime;
+	vmm_timing_snapshot(&tsc, &hrtime, &hrestime);
+
+	/* Check if the guest TSC needs to be scaled */
 	uint64_t mult = 0;
-	uint8_t frac_size = 0;
-	vmi_freqratio_res_t res = ops->vmfreqratio(vm->guest_freq,
-	    vm->host_freq, &mult, &frac_size);
-	bool scale = (res == VFR_VALID) ? true : false;
+	freqratio_res_t res = ops->vmfreqratio(vm->guest_freq,
+	    vmm_get_host_freq(), &mult);
+	bool scale = (res == FR_VALID) ? true : false;
 
 	/* Write the output values */
-	out->vt_guest_tsc = calc_guest_tsc(tsc, scale, mult, vm->tsc_offset,
-	    frac_size);
 	out->vt_guest_freq = vm->guest_freq;
-	*req->vdr_result_len = sizeof (struct vdi_timing_info_v1);
+	out->vt_guest_tsc = calc_guest_tsc(tsc, scale, mult, vm->tsc_offset,
+	    ops->fr_fracsize);
+	out->vt_hrtime = hrtime;
+	out->vt_hrestime = hrestime;
+	out->vt_boot_hrtime = vm->boot_hrtime;
 
 	return (0);
 }
 
+/*
+ * Modify VMM timing data related values
+ *
+ * The primary purpose of this interface is to allow us to update timing-related
+ * data across live migrations of a VM. In particular:
+ * - the vm-wide TSC offset
+ * - scaling the guest TSC for
+ *
+ */
 static int
 vmm_data_write_vmm_timing(void *arg, const vmm_data_req_t *req)
 {
@@ -4292,63 +4335,213 @@ vmm_data_write_vmm_timing(void *arg, const vmm_data_req_t *req)
 	struct vm *vm = arg;
 	struct vdi_timing_info_v1 *src = req->vdr_data;
 	uint64_t mult;
-	uint8_t frac;
 
 	/*
 	 * Determine whether we will need to scale the guest TSC.
 	 */
-	vmi_freqratio_res_t res = ops->vmfreqratio(vm->guest_freq,
-	    vm->host_freq, &mult, &frac);
+	freqratio_res_t res = ops->vmfreqratio(src->vt_guest_freq,
+	    vmm_get_host_freq(), &mult);
 	bool scale = false;
 	switch (res) {
-	case VFR_SCALING_NOT_SUPPORTED:
+	case FR_SCALING_NOT_SUPPORTED:
 		/*
 		 * This system doesn't support TSC scaling, and the guest/host
 		 * frequencies differ
 		 */
 		return (EPERM);
-	case VFR_OUT_OF_RANGE:
+	case FR_OUT_OF_RANGE:
 		/* Requested frequency ratio is too small/large */
 		return (EINVAL);
-	case VFR_SCALING_NOT_NEEDED:
+	case FR_SCALING_NOT_NEEDED:
 		/* Host and guest frequencies are the same */
+		VERIFY3U(mult, ==, 0);
 		scale = false;
 		break;
-	case VFR_VALID:
+	case FR_VALID:
 		/* Host TSC must be scaled for the guest */
+		VERIFY3U(mult, >, 0);
 		scale = true;
 		break;
 	}
-
-	/* Calculate a new TSC offset */
-	// TODO: rdtsc() here?
-	uint64_t tsc = rdtsc_offset();
-	vm->base_host_tsc = tsc;
-	vm->tsc_offset = calc_tsc_offset(vm->base_host_tsc, src->vt_guest_tsc,
-	    scale, mult, frac);
-
-	/* Save relevant values */
-	if (scale) {
-		vm->freq_multiplier = mult;
-	} else {
-		vm->freq_multiplier = 0;
-	}
-	vm->base_guest_tsc = src->vt_guest_tsc;
+	vm->freq_multiplier = mult;
 	vm->guest_freq = src->vt_guest_freq;
 
-	*req->vdr_result_len = sizeof (struct vdi_timing_info_v1);
+	/*
+	 * Update the base_guest_tsc value passed to us by the caller.
+	 *
+	 * The base_guest_tsc value is the value of the guest TSC as calculated
+	 * by a previous call to read the VMM time data. Some amount of time has
+	 * passed between reading that value, which was likely done on another
+	 * machine, and the write to the timing data here. We need to account
+	 * for that time difference.
+	 *
+	 * To do so, we take a reading of the following:
+	 * - the host TSC
+	 * - current wall clock time
+	 * - current hrtime
+	 *
+	 * To update the base_guest_tsc, then, we do the following:
+	 * - find the wall clock delta in ns between the current wall clock time
+	 *   and the time passed to us by the caller
+	 * - determine the number of host TSC ticks that would have occurred in
+	 *   that time
+	 * - scale the host ticks into the frequency of the guest
+	 * - add the number of guest TSC ticks to the base_guest_tsc
+	 *
+	 * We report the adjusted guest TSC back out to the caller through the
+	 * output buffer.
+	 */
+
+	uint64_t tsc, hrtime, hrestime;
+	vmm_timing_snapshot(&tsc, &hrtime, &hrestime);
+
+
+
+	/* Wall clock delta */
+	hrtime_t delta = hrestime - src->vt_hrestime;
+
+	/* Guest uptime */
+	hrtime_t uptime = src->vt_hrtime - src->vt_boot_hrtime;
+
+	/*
+	 * Update the VM's boot_hrtime.
+	 *
+	 * The boot_hrtime indicates the hrtime on the host at which the guest
+	 * booted and is used for normalizing device timers. To update it across
+	 * updating timing data, we need to do the following:
+	 * - find the guest uptime based on the hrtime of the host it's on, and
+	 *   its boot_hrtime
+	 * -
+	 *
+	 */
+
+	/* Adjust vm's boot_hrtime */
+	// TODO: comment here about it going below zero
+	vm->boot_hrtime -= (uptime + delta);
+
+	/* Adjust guest TSC based on wall clock delta */
+	uint64_t host_ticks, guest_ticks;
+	host_ticks = unscalehrtime(delta);
+	if (scale) {
+		guest_ticks = vmm_scale_tsc(host_ticks, mult, ops->fr_fracsize);
+	} else {
+		guest_ticks = host_ticks;
+	}
+	vm->base_guest_tsc = src->vt_guest_tsc + guest_ticks;
+
+	/* Calculate a new TSC offset */
+	vm->base_host_tsc = tsc;
+	vm->tsc_offset = calc_tsc_offset(vm->base_host_tsc, vm->base_guest_tsc,
+	    scale, mult, ops->fr_fracsize);
+
+	/* Write out the updated guest timing-related values */
+	src->vt_guest_tsc = vm->base_guest_tsc;
+	src->vt_boot_hrtime = vm->boot_hrtime;
 
 	return (0);
 }
 
+
 static const vmm_data_version_entry_t vmm_timing_v1 = {
 	.vdve_class = VDC_VMM_TIMING,
 	.vdve_version = 1,
-	.vdve_len_per_item = sizeof (struct vdi_timing_info_v1),
+	.vdve_len_expect = sizeof (struct vdi_timing_info_v1),
 	.vdve_readf = vmm_data_read_vmm_timing,
 	.vdve_writef = vmm_data_write_vmm_timing,
 };
 VMM_DATA_VERSION(vmm_timing_v1);
+
+static int
+vmm_data_read_scaling(void *arg, const vmm_data_req_t *req)
+{
+	VERIFY3U(req->vdr_class, ==, VDC_VMM_SCALING);
+	VERIFY3U(req->vdr_version, ==, 1);
+
+	const uint32_t size = sizeof (struct vdi_tsc_freq_v1);
+	if (req->vdr_len < size) {
+		return (ENOSPC);
+	}
+
+	struct vm *vm = arg;
+	struct vdi_tsc_freq_v1 *out = req->vdr_data;
+
+	out->vt_guest_freq = vm->guest_freq;
+	out->vt_host_freq = vmm_get_host_freq();
+	out->vt_int_size = ops->fr_intsize;
+	out->vt_frac_size = ops->fr_fracsize;
+
+	return (0);
+}
+
+static int
+vmm_data_write_scaling(void *arg, const vmm_data_req_t *req)
+{
+	VERIFY3U(req->vdr_class, ==, VDC_VMM_SCALING);
+	VERIFY3U(req->vdr_version, ==, 1);
+
+	const uint32_t size = sizeof (struct vdi_tsc_freq_v1);
+	if (req->vdr_len < size) {
+		return (ENOSPC);
+	}
+
+	struct vm *vm = arg;
+	struct vdi_tsc_scale_info_v1 *src = req->vdr_data;
+
+	/*
+	 * Return an error if this call asks to change any of the read-only
+	 * fields: the host frequency or the format of the frequency multiplier.
+	 */
+	if ((src->vt_host_freq != vmm_get_host_freq()) ||
+	    (src->vt_int_size != ops->fr_intsize) ||
+	    (src->vt_frac_size != ops->fr_fracsize)) {
+		return (EINVAL);
+	}
+
+	/*
+	 * Validate the requested guest frequency by calculating the
+	 * arch-specific frequency multiplier.
+	 */
+	uint64_t mult;
+	freqratio_res_t res = ops->vmfreqratio(src->vt_guest_freq, src->vt_host_freq, src->vt_fracsize, &mult);
+	switch (res) {
+	case FR_SCALING_NOT_SUPPORTED:
+		/*
+		 * This system doesn't support TSC scaling, and the guest/host
+		 * frequencies differ
+		 */
+		return (EPERM);
+	case FR_OUT_OF_RANGE:
+		/* Requested frequency ratio is too small/large */
+		return (EINVAL);
+	case FR_SCALING_NOT_NEEDED:
+		/* Host and guest frequencies are the same */
+		VERIFY3U(mult, ==, 0);
+		break;
+	case FR_VALID:
+		/* Host TSC must be scaled for the guest */
+		VERIFY3U(mult, >, 0);
+		break;
+	}
+
+	/*
+	 * This is a valid frequency ratio, so update the guest frequency and
+	 * multiplier.
+	 */
+	vm->guest_freq = src->vt_guest_freq;
+	vm->freq_multiplier = mult;
+
+	return (0);
+}
+
+static const vmm_data_version_entry_t vmm_tsc_scaling_v1 = {
+	.vdve_class = VDC_VMM_SCALING,
+	.vdve_version = 1,
+	.vdve_len_expect = sizeof (struct vdi_tsc_scale_info_v1),
+	.vdve_readf = vmm_data_read_scaling,
+	.vdve_writef = vmm_data_write_scaling,
+};
+VMM_DATA_VERSION(vmm_timing_v1);
+
 
 
 static int

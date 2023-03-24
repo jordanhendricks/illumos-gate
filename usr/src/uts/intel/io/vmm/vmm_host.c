@@ -53,7 +53,7 @@ __FBSDID("$FreeBSD$");
 #include "vmm_host.h"
 
 static uint64_t vmm_host_efer, vmm_host_pat, vmm_host_cr0, vmm_host_cr4,
-	vmm_host_xcr0;
+	vmm_host_xcr0, vmm_host_freq;
 static struct xsave_limits vmm_xsave_limits;
 
 void
@@ -103,6 +103,8 @@ vmm_host_state_init(void)
 		cpuid_count(0xd, 0x0, regs);
 		vmm_xsave_limits.xsave_max_size = regs[1];
 	}
+
+	vmm_host_freq = unscalehrtime(NANOSEC);
 }
 
 uint64_t
@@ -138,6 +140,13 @@ vmm_get_host_xcr0(void)
 {
 
 	return (vmm_host_xcr0);
+}
+
+uint64_t
+vmm_get_host_freq(void)
+{
+
+	return (vmm_host_freq);
 }
 
 uint64_t

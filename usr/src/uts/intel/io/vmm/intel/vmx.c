@@ -3800,18 +3800,16 @@ vmx_restorectx(void *arg, int vcpu)
 	}
 }
 
-static vmi_freqratio_res_t
-vmx_freq_ratio(uint64_t guest_hz, uint64_t host_hz, uint64_t *mult,
-    uint8_t *frac)
+static freqratio_res_t
+vmx_freq_ratio(uint64_t guest_hz, uint64_t host_hz, uint64_t *mult)
 {
-	*frac = INTEL_TSCM_FRAC_SIZE;
 	*mult = 0;
 
 	if (guest_hz == host_hz) {
-		return (VFR_SCALING_NOT_NEEDED);
+		return (FR_SCALING_NOT_NEEDED);
 	}
 
-	return (VFR_SCALING_NOT_SUPPORTED);
+	return (FR_SCALING_NOT_SUPPORTED);
 }
 
 struct vmm_ops vmm_ops_intel = {
@@ -3838,6 +3836,8 @@ struct vmm_ops vmm_ops_intel = {
 	.vmsetmsr	= vmx_msr_set,
 
 	.vmfreqratio	= vmx_freq_ratio,
+	.fr_intsize	= INTEL_TSCM_INT_SIZE,
+	.fr_fracsize	= INTEL_TSCM_FRAC_SIZE,
 };
 
 /* Side-effect free HW validation derived from checks in vmx_init. */

@@ -65,6 +65,7 @@ uint64_t vmm_get_host_efer(void);
 uint64_t vmm_get_host_cr0(void);
 uint64_t vmm_get_host_cr4(void);
 uint64_t vmm_get_host_xcr0(void);
+uint64_t vmm_get_host_freq(void);
 uint64_t vmm_get_host_datasel(void);
 uint64_t vmm_get_host_codesel(void);
 uint64_t vmm_get_host_tsssel(void);

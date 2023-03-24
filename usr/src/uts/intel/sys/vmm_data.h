@@ -36,6 +36,7 @@
 #define	VDC_RTC		12	/* IBM PC Real Time Clock */
 
 #define	VDC_VMM_TIMING	13	/* Timing-related VMM data */
+#define	VDC_VMM_SCALING	14	/* TSC Scaling VMM data */
 
 /* Indicates top of VMM Data Class range, updated as classes are added */
 #define	VDC_MAX		(VDC_VMM_TIMING + 1)
@@ -119,15 +120,6 @@ struct vdi_lapic_v1 {
 #define	VAI_BOOT_HRTIME		2
 /* Guest TSC frequency (not effected by wall clock adj.) */
 #define	VAI_TSC_FREQ		3
-
-/*
- * VDC_VMM_TIMING
- */
-
-struct vdi_timing_info_v1 {
-	uint64_t	vt_guest_freq;
-	uint64_t	vt_guest_tsc;
-};
 
 /* VDC_IOAPIC: */
 
@@ -233,5 +225,67 @@ struct vdi_rtc_v1 {
 	uint64_t	vr_rtc_sec;
 	uint64_t	vr_rtc_nsec;
 };
+
+/* VDC_VMM_TIMING: */
+
+/*
+ * Interface for modifying timing-related data of a guest, allowing the guest's
+ * TSC and device timers to continue working across live migrations.
+ *
+ * Reads of this data will populate all fields, including:
+ * - current guest TSC (a calculated value)
+ * - guest TSC frequency
+ * - guest boot_time, which tracks the offset of the guest boot based on host
+ *   hrtime
+ * - current host hrtime and wall clock time (hrestime) at the time of read
+ *
+ * Callers writing to the timing data are expected to make any necessary
+ * adjustments to the guest TSC and boot_hrtime based on the time delta between
+ * read and write (for example, the time it takes to perform a live migration).
+ * The hrtime and wall clock times of the host are provided on read calls for
+ * this purpose.
+ *
+ * Reads:
+ * - guest data
+ * - host time snapshot at time of read
+ *
+ * Writes:
+ * - guest data as is
+ * - delta
+ * - hrtime/wall clock time of delta
+ *
+ * or
+ *
+ * Writes:
+ * - adjusted guest data
+ * - wall clock time of adjustment
+ * - compute additional delta from wall clock time
+ *
+ * would need: way to get guest freq / frac or mult
+ * maybe an additional vmm_data class for this purpose
+ * we could check that there is no arch discrepancy across the chasm
+ *
+ */
+struct vdi_timing_info_v1 {
+	/* guest-related fields */
+	//uint64_t	vt_guest_freq;	/* guest TSC frequency (hz) */
+	uint64_t	vt_guest_tsc;	/* current guest TSC */
+	hrtime_t	vt_boot_hrtime; /* guest boot_hrtime */ 
+
+	/* timing snapshot */
+	hrtime_t	vt_hrtime;	/* host hrtime (ns) */
+	uint64_t	vt_hres_sec;	/* host hrestime (sec) */
+	uint64_t	vt_hres_ns;	/* host hrestime (ns) */
+};
+
+// Read only
+struct vdi_tsc_freq_v1 {
+	uint64_t	vt_guest_freq;
+
+	/* read-only */
+	uint64_t	vt_host_freq;
+	uint32_t	vt_int_size;
+	uint32_t	vt_frac_size;
+}
 
 #endif /* _VMM_DATA_H_ */
