@@ -129,6 +129,7 @@ struct vmm_ops {
 	vmi_set_msr_t		vmsetmsr;
 
 	vmi_freqratio_t		vmfreqratio;
+	uint32_t		fr_intsize;
 	uint32_t		fr_fracsize;
 };
 

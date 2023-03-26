@@ -39,7 +39,7 @@
 #define	VDC_VMM_SCALING	14	/* TSC Scaling VMM data */
 
 /* Indicates top of VMM Data Class range, updated as classes are added */
-#define	VDC_MAX		(VDC_VMM_TIMING + 1)
+#define	VDC_MAX		(VDC_VMM_SCALING + 1)
 
 
 /* VMM Data Identifiers */
@@ -268,7 +268,6 @@ struct vdi_rtc_v1 {
  */
 struct vdi_timing_info_v1 {
 	/* guest-related fields */
-	//uint64_t	vt_guest_freq;	/* guest TSC frequency (hz) */
 	uint64_t	vt_guest_tsc;	/* current guest TSC */
 	hrtime_t	vt_boot_hrtime; /* guest boot_hrtime */ 
 
@@ -286,6 +285,6 @@ struct vdi_tsc_freq_v1 {
 	uint64_t	vt_host_freq;
 	uint32_t	vt_int_size;
 	uint32_t	vt_frac_size;
-}
+};
 
 #endif /* _VMM_DATA_H_ */
