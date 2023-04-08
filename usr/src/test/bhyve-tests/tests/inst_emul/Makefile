@@ -24,10 +24,12 @@ PROG =	rdmsr \
 # in-guest payloads, it is easier to build them here.
 PROG +=	triple_fault \
 	exit_paging \
-	page_dirty
+	page_dirty \
+	guest_tsc \
+	tsc
 
 # C-based payloads need additional utils object
-CPAYLOADS =	cpuid
+CPAYLOADS =	cpuid guest_tsc
 
 PAYLOADS = $(PROG)
 include ../Makefile.in_guest
